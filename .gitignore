@@ -1,0 +1,26 @@
+# Build output
+Android/src/build/
+Android/src/app/build/
+Android/src/llm/build/
+Android/src/asr/build/
+Android/src/.gradle/
+Android/src/.cxx/
+Android/src/local.properties
+.gradle/
+build/
+
+# Shared native dependency cache
+Android/src/.native-deps/
+
+# Native build trees and downloaded models
+models/
+*.gguf
+*.part
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store

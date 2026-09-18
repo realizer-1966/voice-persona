@@ -1,0 +1,92 @@
+// asrbridge.cpp - JNI surface for the transcribe.cpp speech engine.
+#include <jni.h>
+
+#include <string>
+#include <vector>
+
+#include "asr_engine.h"
+#include "jni_common.h"
+
+using voicepersona::AsrEngine;
+
+namespace {
+
+AsrEngine * engine_from(jlong handle) {
+    return reinterpret_cast<AsrEngine *>(handle);
+}
+
+}  // namespace
+
+extern "C" {
+
+JNIEXPORT jlong JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeCreate(JNIEnv *, jclass) {
+    return reinterpret_cast<jlong>(new AsrEngine());
+}
+
+JNIEXPORT void JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeDestroy(JNIEnv *, jclass, jlong h) {
+    delete engine_from(h);
+}
+
+// Returns model info on success, or "ERR: ..." on failure.
+JNIEXPORT jstring JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeLoad(JNIEnv * env, jclass, jlong h, jstring path,
+                                              jint n_threads) {
+    AsrEngine * engine = engine_from(h);
+    if (!engine) {
+        return jniutil::to_java(env, "ERR: null handle");
+    }
+    std::string err;
+    if (!engine->load(jniutil::to_std(env, path), n_threads, err)) {
+        return jniutil::to_java(env, "ERR: " + err);
+    }
+    return jniutil::to_java(env, engine->info());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeIsLoaded(JNIEnv *, jclass, jlong h) {
+    AsrEngine * engine = engine_from(h);
+    return (engine && engine->loaded()) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeUnload(JNIEnv *, jclass, jlong h) {
+    AsrEngine * engine = engine_from(h);
+    if (engine) {
+        engine->unload();
+    }
+}
+
+// pcm must be 16 kHz mono float32 in [-1, 1].
+JNIEXPORT jstring JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeTranscribe(JNIEnv * env, jclass, jlong h,
+                                                    jfloatArray pcm, jint n_samples) {
+    AsrEngine * engine = engine_from(h);
+    if (!engine) {
+        return jniutil::to_java(env, "ERR: null handle");
+    }
+    std::string err;
+    if (pcm == nullptr || n_samples <= 0) {
+        return jniutil::to_java(env, "ERR: empty audio");
+    }
+    jfloat * data = env->GetFloatArrayElements(pcm, nullptr);
+    if (!data) {
+        return jniutil::to_java(env, "ERR: cannot read audio buffer");
+    }
+    const std::string text = engine->transcribe(data, (int) n_samples, err);
+    env->ReleaseFloatArrayElements(pcm, data, JNI_ABORT);
+
+    if (!err.empty()) {
+        return jniutil::to_java(env, "ERR: " + err);
+    }
+    return jniutil::to_java(env, text);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeInfo(JNIEnv * env, jclass, jlong h) {
+    AsrEngine * engine = engine_from(h);
+    return jniutil::to_java(env, engine ? engine->info() : "not loaded");
+}
+
+}  // extern "C"
