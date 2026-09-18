@@ -4,11 +4,13 @@ project(voicepersona_llm CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Upstream llama.cpp, pinned. Fetched at configure time so CI needs no submodule.
+# Absolute paths keep the source list and include dirs valid regardless of how
+# deep the Gradle/NDK build directory sits.
+get_filename_component(VOICEPERSONA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.." ABSOLUTE)
+
 include(FetchContent)
-# Both native modules pull heavy repos; one shared cache keeps CI to a single
-# clone of each instead of one per module.
-set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.native-deps" CACHE PATH "")
+set(FETCHCONTENT_BASE_DIR "${VOICEPERSONA_ROOT}/Android/src/.native-deps" CACHE PATH "")
+# Upstream llama.cpp, pinned. Fetched at configure time so CI needs no submodule.
 set(LLAMA_GIT_TAG "01041db99dae68529db58c6fc692a9ca623b30a2")
 
 FetchContent_Declare(
@@ -21,11 +23,11 @@ FetchContent_MakeAvailable(llama)
 
 add_library(voicepersona_llm SHARED
     voicebridge.cpp
-    ../../../../../../native/voice_engine.cpp
+    ${VOICEPERSONA_ROOT}/native/voice_engine.cpp
 )
 
 target_include_directories(voicepersona_llm PRIVATE
-    ../../../../../native
+    ${VOICEPERSONA_ROOT}/native
 )
 
 target_link_libraries(voicepersona_llm PRIVATE

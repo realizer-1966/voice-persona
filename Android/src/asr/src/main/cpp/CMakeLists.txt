@@ -4,14 +4,12 @@ project(voicepersona_asr CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# transcribe.cpp pins its own ggml vendored inside its source tree through its
-# own CMake options. The public header is enough for our wrapper.
-set(TRANSCRIBE_SRC_DIR "${CMAKE_CURRENT_BINARY_DIR}/transcribe.cpp-src" CACHE PATH "")
+# Absolute paths keep the source list and include dirs valid regardless of how
+# deep the Gradle/NDK build directory sits.
+get_filename_component(VOICEPERSONA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.." ABSOLUTE)
 
 include(FetchContent)
-# Both native modules pull heavy repos; one shared cache keeps CI to a single
-# clone of each instead of one per module.
-set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.native-deps" CACHE PATH "")
+set(FETCHCONTENT_BASE_DIR "${VOICEPERSONA_ROOT}/Android/src/.native-deps" CACHE PATH "")
 set(TRANSCRIBE_GIT_TAG "be7a8b35e9ba2df20298bd26e32d53407c3bcbcd")
 
 FetchContent_Declare(
@@ -51,15 +49,13 @@ file(WRITE "${_transcribe_src_cmake}" "${_transcribe_src_text_fixed}")
 # content, which is exactly the state after FetchContent_Populate above.
 add_subdirectory("${transcribe_cpp_SOURCE_DIR}" "${transcribe_cpp_BINARY_DIR}")
 
-message(STATUS "transcribe.cpp source dir: ${transcribe_cpp_SOURCE_DIR}")
-
 add_library(voicepersona_asr SHARED
     asrbridge.cpp
-    ../../../../../../native/asr_engine.cpp
+    ${VOICEPERSONA_ROOT}/native/asr_engine.cpp
 )
 
 target_include_directories(voicepersona_asr PRIVATE
-    ../../../../../../native
+    ${VOICEPERSONA_ROOT}/native
     ${transcribe_cpp_SOURCE_DIR}/include
 )
 
