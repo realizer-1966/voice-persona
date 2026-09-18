@@ -4,6 +4,7 @@ Android/src/app/build/
 Android/src/llm/build/
 Android/src/asr/build/
 Android/src/.gradle/
+!Android/src/gradle/wrapper/gradle-wrapper.jar
 Android/src/.cxx/
 Android/src/local.properties
 .gradle/
