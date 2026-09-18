@@ -65,7 +65,8 @@ class SpeechToText {
         return text
     }
 
-    override fun finalize() {
+    /** Frees the native handle. Call from the owner's teardown. */
+    fun release() {
         if (handle != 0L) {
             AsrBridge.nativeDestroy(handle)
             handle = 0L

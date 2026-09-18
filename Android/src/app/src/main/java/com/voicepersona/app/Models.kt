@@ -87,8 +87,8 @@ object ModelStore {
         return if (f.length() >= spec.approxBytes * 95 / 100) ModelState.READY else ModelState.PARTIAL
     }
 
-    fun existingBytes(context: Context): Long =
-        ModelCatalog.all.filter { state(context, it) == ModelState.READY }.sumOf { it.approxBytes }
+    fun existingBytes(context: Context, specs: List<ModelSpec>): Long =
+        specs.filter { state(context, it) == ModelState.READY }.sumOf { it.approxBytes }
 
     /** Downloads to a temp name and renames, so a failed run never looks READY. */
     suspend fun download(

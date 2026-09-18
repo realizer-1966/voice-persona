@@ -162,7 +162,7 @@ private fun ChatScreen(state: UiState, vm: AppViewModel, onRequestMic: () -> Uni
                 input = ""
                 vm.sendText(text)
             },
-            onMic = { vm.toggleRecording(hasPermission = !state.permissionNeeded) },
+            onMic = { vm.toggleRecording() },
             onToggleTts = { vm.setTtsEnabled(!state.ttsEnabled) },
             onRequestMic = onRequestMic,
         )
@@ -303,12 +303,8 @@ private fun ComposerRow(
         Spacer(Modifier.width(6.dp))
         FilledIconButton(
             onClick = {
-                if (recording) {
-                    onMic()
-                } else {
-                    onRequestMic()
-                    onMic()
-                }
+                if (!recording) onRequestMic()
+                onMic()
             },
             enabled = !busy,
         ) {

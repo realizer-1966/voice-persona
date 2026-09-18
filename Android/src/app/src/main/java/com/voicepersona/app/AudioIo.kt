@@ -106,33 +106,32 @@ object AudioDecoder {
     fun decode(context: Context, uri: Uri): FloatArray {
         val extractor = MediaExtractor()
         extractor.setDataSource(context, uri, null)
-        var trackIndex = -1
-        var format: MediaFormat? = null
-        for (i in 0 until extractor.trackCount) {
-            val f = extractor.getTrackFormat(i)
-            val mime = f.getString(MediaFormat.KEY_MIME) ?: continue
-            if (mime.startsWith("audio/")) {
-                trackIndex = i
-                format = f
-                break
+
+        val audioTrack = (0 until extractor.trackCount)
+            .map { index -> index to extractor.getTrackFormat(index) }
+            .firstOrNull { (_, trackFormat) ->
+                (trackFormat.getString(MediaFormat.KEY_MIME) ?: "").startsWith("audio/")
             }
-        }
-        require(trackIndex >= 0 && format != null) { "오디오 트랙을 찾을 수 없습니다" }
+        requireNotNull(audioTrack) { "오디오 트랙을 찾을 수 없습니다" }
+
+        val trackIndex = audioTrack.first
+        val format = audioTrack.second
         extractor.selectTrack(trackIndex)
 
-        val mime = format.getString(MediaFormat.KEY_MIME)!!
+        val mime = requireNotNull(format.getString(MediaFormat.KEY_MIME))
         val codec = MediaCodec.createDecoderByType(mime)
         codec.configure(format, null, null, 0)
         codec.start()
 
         val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+        val inputRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
 
         val pcm16 = ArrayList<ShortArray>(1024)
         val info = MediaCodec.BufferInfo()
         var sawInputEnd = false
         var sawOutputEnd = false
         var outChannels = channels
-        var outRate = sampleRate
+        var outRate = inputRate
 
         while (!sawOutputEnd) {
             if (!sawInputEnd) {

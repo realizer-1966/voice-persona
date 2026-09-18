@@ -1,8 +1,11 @@
 package com.voicepersona.app
 
+import android.Manifest
 import android.app.Application
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -252,8 +255,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // --------------------------------------------------------------- recording
 
-    fun toggleRecording(hasPermission: Boolean) {
-        if (!hasPermission) {
+    /** Toggles capture. Asks for the microphone grant when it is still missing. */
+    fun toggleRecording() {
+        val context = getApplication<Application>()
+        val granted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
             _state.update { it.copy(permissionNeeded = true) }
             return
         }
@@ -416,6 +424,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         speaker?.shutdown()
         runCatching { recorder?.stop() }
+        llm.release()
+        stt.release()
         super.onCleared()
     }
 }

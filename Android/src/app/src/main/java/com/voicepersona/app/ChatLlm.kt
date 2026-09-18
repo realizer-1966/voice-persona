@@ -69,7 +69,8 @@ class ChatLlm {
         }
     }
 
-    override fun finalize() {
+    /** Frees the native handle. Call from the owner's teardown. */
+    fun release() {
         if (handle != 0L) {
             LlamaBridge.nativeDestroy(handle)
             handle = 0L
