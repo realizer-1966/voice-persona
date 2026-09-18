@@ -4,7 +4,7 @@ package com.voicepersona.llm
  * JNI surface for the llama.cpp chat engine. All calls are blocking; run them on a
  * worker thread and keep them serialized (the native engine is not reentrant).
  */
-internal object LlamaBridge {
+object LlamaBridge {
     init {
         System.loadLibrary("voicepersona_llm")
     }

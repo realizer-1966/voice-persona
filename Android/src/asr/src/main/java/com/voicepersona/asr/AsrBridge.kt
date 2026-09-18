@@ -3,7 +3,7 @@ package com.voicepersona.asr
 /**
  * JNI surface for the transcribe.cpp speech engine. Blocking; serialize calls.
  */
-internal object AsrBridge {
+object AsrBridge {
     init {
         System.loadLibrary("voicepersona_asr")
     }

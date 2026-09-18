@@ -24,9 +24,10 @@ class Speaker(context: Context) {
     fun speak(text: String) {
         if (text.isBlank()) return
         val engine = tts ?: return
-        val doSpeak = {
+        val doSpeak: () -> Unit = {
             engine.language = Locale.KOREAN
             engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "vp-${System.currentTimeMillis()}")
+            Unit
         }
         if (ready) doSpeak() else pending = doSpeak
     }
