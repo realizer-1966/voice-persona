@@ -8,20 +8,27 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Serialized wrapper around the native STT engine. Moonshine handles up to
- * ~48 s per run, so longer audio is split into chunks.
+ * Serialized wrapper around the native STT engine. The per-call audio ceiling
+ * belongs to the model (Moonshine ~48 s, Qwen3-ASR ~87 min), so the chunk size
+ * is set from the loaded [ModelSpec] rather than hard coded.
  */
 class SpeechToText {
     private val lock = Mutex()
     private var handle: Long = 0L
 
+    /** Usable seconds per native call, from the model's input contract. */
+    @Volatile
+    private var chunkSeconds: Int = 40
+
     companion object {
         const val SAMPLE_RATE = 16000
-        private const val CHUNK_SECONDS = 40
+        /** Leave headroom under the model's stated ceiling. */
+        private const val CHUNK_MARGIN = 0.9
     }
 
-    suspend fun load(model: File, nThreads: Int): String = lock.withLock {
+    suspend fun load(model: File, nThreads: Int, maxAudioSeconds: Int): String = lock.withLock {
         withContext(Dispatchers.Default) {
+            chunkSeconds = ((maxAudioSeconds * CHUNK_MARGIN).toInt()).coerceAtLeast(1)
             if (handle == 0L) handle = AsrBridge.nativeCreate()
             val info = AsrBridge.nativeLoad(handle, model.absolutePath, nThreads)
             if (info.startsWith("ERR:")) throw IllegalStateException(info.removePrefix("ERR: "))
@@ -42,7 +49,7 @@ class SpeechToText {
     suspend fun transcribe(pcm: FloatArray): String = lock.withLock {
         withContext(Dispatchers.Default) {
             if (handle == 0L) throw IllegalStateException("음성 모델이 로드되지 않았습니다")
-            val chunkSize = CHUNK_SECONDS * SAMPLE_RATE
+            val chunkSize = chunkSeconds * SAMPLE_RATE
             if (pcm.size <= chunkSize) {
                 return@withContext runChunk(pcm)
             }

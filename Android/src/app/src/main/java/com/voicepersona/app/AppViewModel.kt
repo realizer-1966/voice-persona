@@ -29,16 +29,20 @@ data class UiState(
     val modelsReady: Int = 0,
     val modelsTotal: Int = 0,
     val selectedLlmId: String = ModelCatalog.llm.id,
-    val requiredModels: List<ModelSpec> = ModelCatalog.required(ModelCatalog.llm),
+    val selectedAsrId: String = ModelCatalog.asrDefault.id,
+    val requiredModels: List<ModelSpec> =
+        ModelCatalog.required(ModelCatalog.llm, ModelCatalog.asrDefault),
+    /** Auto language detection is a property of the loaded STT model. */
+    val asrAutoDetect: Boolean = false,
     val downloading: ModelSpec? = null,
     val downloadProgress: Float = 0f,
     val llmInfo: String = "",
     val asrInfo: String = "",
+    val asrNote: String = "",
     val messages: List<ChatMessage> = emptyList(),
     val status: String = "",
     val busy: Boolean = false,
     val recording: Boolean = false,
-    val asrLanguage: String = "ko",
     val ttsEnabled: Boolean = true,
     val personas: List<Persona> = emptyList(),
     val activePersonaId: String? = null,
@@ -71,7 +75,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     personas = personas,
                     activePersonaId = active?.takeIf { id -> personas.any { p -> p.id == id } },
-                    asrLanguage = AppPrefs.asrLanguage(getApplication()),
                     ttsEnabled = AppPrefs.ttsEnabled(getApplication()),
                 )
             }
@@ -90,6 +93,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun llmSpec(): ModelSpec = ModelCatalog.llmOptions
         .firstOrNull { it.id == llmModelId } ?: ModelCatalog.llm
 
+    var asrModelId: String
+        get() = AppPrefs.get(getApplication(), "asr_model", ModelCatalog.asrDefault.id)
+        set(value) {
+            AppPrefs.set(getApplication(), "asr_model", value)
+        }
+
+    private fun asrSpec(): ModelSpec = ModelCatalog.speech
+        .firstOrNull { it.id == asrModelId } ?: ModelCatalog.asrDefault
+
     fun setLlmModel(id: String) {
         if (id == llmModelId) return
         llmModelId = id
@@ -103,10 +115,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshModels() {
         val context = getApplication<Application>()
-        val need = ModelCatalog.required(llmSpec())
+        val need = ModelCatalog.required(llmSpec(), asrSpec())
         val ready = need.count { ModelStore.state(context, it) == ModelState.READY }
         _state.update {
-            it.copy(modelsReady = ready, modelsTotal = need.size, selectedLlmId = llmModelId)
+            it.copy(
+                modelsReady = ready,
+                modelsTotal = need.size,
+                selectedLlmId = llmModelId,
+                selectedAsrId = asrModelId,
+                asrNote = asrSpec().note,
+                asrAutoDetect = asrSpec().languages.size > 2,
+            )
         }
     }
 
@@ -115,7 +134,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val context = getApplication<Application>()
             // Only the selected LLM is fetched, so a 4B choice does not drag 1.7B in.
-            val wanted = ModelCatalog.required(llmSpec())
+            val wanted = ModelCatalog.required(llmSpec(), asrSpec())
             for (spec in wanted) {
                 if (ModelStore.state(context, spec) == ModelState.READY) continue
                 _state.update {
@@ -133,7 +152,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
             }
-            val need = ModelCatalog.required(llmSpec())
+            val need = ModelCatalog.required(llmSpec(), asrSpec())
             val ready = need.count { ModelStore.state(context, it) == ModelState.READY }
             _state.update {
                 it.copy(downloading = null, modelsReady = ready, modelsTotal = need.size,
@@ -166,9 +185,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun asrModel(context: Application): ModelSpec? {
-        val code = _state.value.asrLanguage
-        val preferred = if (code == "ja") ModelCatalog.asrJa else ModelCatalog.asrKo
-        return preferred.takeIf { ModelStore.state(context, it) == ModelState.READY }
+        val spec = asrSpec()
+        return spec.takeIf { ModelStore.state(context, it) == ModelState.READY }
     }
 
     fun loadAsr() {
@@ -181,8 +199,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val info = stt.load(
                     spec.file(context),
                     nThreads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6),
+                    maxAudioSeconds = spec.maxAudioSeconds,
                 )
-                _state.update { it.copy(asrInfo = "$info (${spec.label})") }
+                _state.update {
+                    it.copy(
+                        asrInfo = "$info (${spec.label})",
+                        asrNote = spec.note,
+                        asrAutoDetect = spec.languages.size > 2,
+                    )
+                }
             }.onFailure { error ->
                 _state.update { it.copy(status = "음성 모델 로드 실패: ${error.message}") }
             }
@@ -190,10 +215,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setAsrLanguage(code: String) {
-        AppPrefs.setAsrLanguage(getApplication(), code)
-        _state.update { it.copy(asrLanguage = code) }
-        loadAsr()
+    /** Switches the STT model. Auto-detecting models ignore the language hint. */
+    fun setAsrModel(id: String) {
+        if (id == asrModelId) return
+        asrModelId = id
+        val spec = asrSpec()
+        _state.update {
+            it.copy(
+                selectedAsrId = id,
+                asrNote = spec.note,
+                asrAutoDetect = spec.languages.size > 2,
+                asrInfo = "",
+            )
+        }
+        viewModelScope.launch {
+            runCatching { stt.unload() }
+            refreshModels()
+            loadAsr()
+        }
     }
 
     fun setTtsEnabled(enabled: Boolean) {
@@ -347,12 +386,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val pcm = withContext(Dispatchers.IO) {
                     AudioDecoder.decode(getApplication(), uri)
                 }
+                val seconds = pcm.size / SpeechToText.SAMPLE_RATE
                 if (pcm.size < SpeechToText.SAMPLE_RATE) {
                     throw IllegalStateException("오디오가 너무 짧습니다")
                 }
+                val spec = asrSpec()
                 _state.update {
                     it.copy(
-                        personaProgress = "음성 인식 중 (${pcm.size / SpeechToText.SAMPLE_RATE}초)"
+                        personaProgress = buildString {
+                            append("음성 인식 중 (")
+                            append(seconds)
+                            append("초")
+                            if (seconds > spec.maxAudioSeconds) {
+                                // Chunked automatically, but say so, because the
+                                // chunks are transcribed independently.
+                                append(", ")
+                                append(spec.label)
+                                append(" 한도 ")
+                                append(spec.maxAudioSeconds)
+                                append("초 → 나눠서 처리")
+                            }
+                            append(")")
+                        }
                     )
                 }
                 val transcript = stt.transcribe(pcm)

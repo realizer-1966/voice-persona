@@ -15,6 +15,10 @@ data class ModelSpec(
     val url: String,
     val fileName: String,
     val approxBytes: Long,
+    val languages: List<String> = emptyList(),
+    /** Single-pass audio ceiling, from the model's own input contract. */
+    val maxAudioSeconds: Int = 48,
+    val note: String = "",
 ) {
     fun file(context: Context): File = File(modelsDir(context), fileName)
 }
@@ -53,6 +57,9 @@ object ModelCatalog {
         url = "$HF/handy-computer/moonshine-base-ko-gguf/resolve/main/moonshine-base-ko-Q8_0.gguf",
         fileName = "moonshine-base-ko-Q8_0.gguf",
         approxBytes = 77_476_480L,
+        languages = listOf("ko"),
+        maxAudioSeconds = 48,
+        note = "77MB 초경량, 한국어 전용, 최대 48초",
     )
 
     val asrJa = ModelSpec(
@@ -61,12 +68,32 @@ object ModelCatalog {
         url = "$HF/handy-computer/moonshine-base-ja-gguf/resolve/main/moonshine-base-ja-Q8_0.gguf",
         fileName = "moonshine-base-ja-Q8_0.gguf",
         approxBytes = 77_476_480L,
+        languages = listOf("ja"),
+        maxAudioSeconds = 48,
+        note = "77MB 초경량, 일본어 전용, 최대 48초",
     )
 
-    val speech = listOf(asrKo, asrJa)
+    // Qwen3-ASR is an audio-LLM: it auto-detects across 30 languages and takes a
+    // whole recording in one pass (65k-token decoder context), so long persona
+    // recordings do not have to be chunked.
+    val asrQwen3 = ModelSpec(
+        id = "asr-qwen3-0.6b",
+        label = "Qwen3-ASR 0.6B (30개 언어)",
+        url = "$HF/handy-computer/Qwen3-ASR-0.6B-gguf/resolve/main/Qwen3-ASR-0.6B-Q4_K_M.gguf",
+        fileName = "Qwen3-ASR-0.6B-Q4_K_M.gguf",
+        approxBytes = 589_557_760L,
+        languages = listOf("ko", "ja", "en"),
+        maxAudioSeconds = 87 * 60,
+        note = "한국어·일본어 자동 감지, 긴 녹음 한 번에 처리",
+    )
 
-    /** What the app needs on disk for a given language model choice. */
-    fun required(selectedLlm: ModelSpec): List<ModelSpec> = listOf(selectedLlm) + speech
+    val speech = listOf(asrQwen3, asrKo, asrJa)
+
+    val asrDefault = asrQwen3
+
+    /** What the app needs on disk for the current model choices. */
+    fun required(selectedLlm: ModelSpec, selectedAsr: ModelSpec): List<ModelSpec> =
+        listOf(selectedLlm, selectedAsr)
 }
 
 fun modelsDir(context: Context): File =

@@ -604,15 +604,45 @@ private fun SetupScreen(state: UiState, vm: AppViewModel) {
         Spacer(Modifier.height(18.dp))
         HorizontalDivider()
         Spacer(Modifier.height(12.dp))
-        Text("음성 인식 언어", style = MaterialTheme.typography.titleMedium)
+        Text("음성 인식 모델", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("ko" to "한국어", "ja" to "日本語").forEach { (code, label) ->
-                val selected = state.asrLanguage == code
+        ModelCatalog.speech.forEach { option ->
+            val selected = option.id == state.selectedAsrId
+            val ready = ModelStore.state(context, option) == ModelState.READY
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = (if (ready) "✅ " else "⬜ ") + option.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = "${option.approxBytes / 1_000_000} MB · " +
+                            if (option.languages.size > 2) {
+                                "언어 자동 감지"
+                            } else {
+                                option.languages.joinToString("/")
+                            },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (option.note.isNotBlank()) {
+                        Text(
+                            option.note,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                }
                 if (selected) {
-                    Button(onClick = { vm.setAsrLanguage(code) }) { Text(label) }
+                    Icon(Icons.Filled.Check, contentDescription = "선택됨")
                 } else {
-                    OutlinedButton(onClick = { vm.setAsrLanguage(code) }) { Text(label) }
+                    TextButton(
+                        onClick = { vm.setAsrModel(option.id) },
+                        enabled = !state.busy && state.downloading == null,
+                    ) { Text("선택") }
                 }
             }
         }

@@ -32,8 +32,23 @@ Android/src/
 |---|---|---|---|
 | 대화 | `Ternary-Bonsai-4B-Q2_0_g64.gguf` | 1.14 GB | 기본값, 한국어 대화 품질 확보 |
 | 대화 (경량) | `Ternary-Bonsai-1.7B-Q2_0_g64.gguf` | 490 MB | 빠르지만 지시 이행이 약함 |
-| 음성 (한국어) | `moonshine-base-ko-Q8_0.gguf` | 77 MB | 1회 최대 48초 |
-| 음성 (일본어) | `moonshine-base-ja-Q8_0.gguf` | 77 MB | |
+| 음성 (기본) | `Qwen3-ASR-0.6B-Q4_K_M.gguf` | 590 MB | 30개 언어 자동 감지, 1회 최대 87분 |
+| 음성 (경량) | `moonshine-base-ko-Q8_0.gguf` | 77 MB | 한국어 전용, 1회 최대 48초 |
+| 음성 (경량) | `moonshine-base-ja-Q8_0.gguf` | 77 MB | 일본어 전용, 1회 최대 48초 |
+
+### 음성 인식 모델 비교 (실측)
+
+`transcribe-cli` 로 같은 오디오를 돌린 결과:
+
+| 오디오 | Qwen3-ASR 0.6B | Moonshine base |
+|---|---|---|
+| ko.wav | 조금만 생각을 하면서 살면 훨씬 편할 거야. (ko 감지) | 조금만 생각을 하면서 살면 훨씬 편할 거야. |
+| ja.wav | うちの中学は弁当制で、持っていけない場合は、五十円の学校販売のパンを買う。 (ja 감지) | うちの中学は弁当制で、持っていけない場合は、五十円の学校販売のパンを買う。 |
+| jfk.wav | And so, my fellow Americans, ask not what your country can do for you... (en 감지) | (영어 미지원) |
+| ko-long.wav (26초) | 문장부호·대소문자 포함, 더 정확 | 띄어쓰기 흐트러짐 |
+
+긴 녹음에서 Qwen3-ASR 이 문장부호와 띄어쓰기를 훨씬 잘 살린다. 한국어 대화 한 건만 빠르게
+처리할 때는 Moonshine(77MB)이 가볍다. 앱의 `설정 → 음성 인식 모델` 에서 바꾼다.
 
 공식 group-64 `Q2_0` 대역을 쓴다. 이 대역은 mainline llama.cpp 로 읽히므로 포크 바이너리가
 필요 없다 (`PQ2_0`/`PTQ1_0` 는 PrismML 포크 전용).
@@ -51,6 +66,9 @@ Android/src/
   복사한다. 대신 녹취록에서 뽑은 **실제 대화 턴**을 few-shot 으로 넣으면 말투가 훨씬 잘 전이된다.
 - **답변 길이**: 1.7B/4B 모두 첫 문단을 넘기면 반복 루프에 빠진다. 첫 빈 줄에서 생성을 멈춘다.
 - **온도**: 0.2 는 품질이 떨어지고 0.7 이 안정적이다.
+- **음성 인식 청크 크기**: 모델마다 1회 처리 한도가 다르다 (Moonshine 48초, Qwen3-ASR 87분).
+  모델의 `maxAudioSeconds` 를 90% 로 잡아 자동 분할한다. `transcribe_session_get_limits()`
+  가 보고하는 값이 세션마다 다를 수 있으므로 여유를 둔다.
 
 ## 빌드
 

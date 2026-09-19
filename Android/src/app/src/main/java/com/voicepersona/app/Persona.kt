@@ -93,7 +93,6 @@ object PersonaStore {
 object AppPrefs {
     private const val FILE = "voicepersona.prefs"
     private const val KEY_ACTIVE_PERSONA = "active_persona"
-    private const val KEY_ASR_LANGUAGE = "asr_language"
     private const val KEY_TTS_ENABLED = "tts_enabled"
 
     private fun read(context: Context): MutableMap<String, String> {
@@ -132,10 +131,6 @@ object AppPrefs {
 
     fun setActivePersona(context: Context, id: String?) =
         set(context, KEY_ACTIVE_PERSONA, id ?: "")
-
-    fun asrLanguage(context: Context): String = get(context, KEY_ASR_LANGUAGE, "ko")
-
-    fun setAsrLanguage(context: Context, value: String) = set(context, KEY_ASR_LANGUAGE, value)
 
     fun ttsEnabled(context: Context): Boolean = get(context, KEY_TTS_ENABLED, "1") == "1"
 
