@@ -27,9 +27,9 @@ android {
                 arguments += "-DTRANSCRIBE_BUILD_TOOLS=OFF"
                 arguments += "-DTRANSCRIBE_USE_SYSTEM_BLAS=OFF"
                 arguments += "-DTRANSCRIBE_USE_OPENMP=OFF"
-                # Release posture: no debug info in the shipped objects. The
-                # default externalNativeBuild type is Debug, which carries
-                # -g and left ~93 MB of DWARF in the .so files.
+                // Release posture: no debug info in the shipped objects. The
+                // default externalNativeBuild type is Debug, which carried -g
+                // and left ~93 MB of DWARF in the libraries.
                 cppFlags += listOf("-O2", "-fno-unwind-tables", "-fno-asynchronous-unwind-tables")
                 cFlags += listOf("-O2")
             }
@@ -55,38 +55,25 @@ dependencies {
 }
 
 /**
- * Strips the built .so and refreshes the JNI libs folder.
+ * Strips the built .so files and stages them where AGP merges jniLibs.
  *
- * AGP's own stripReleaseDebugSymbols task decides the NDK strip tool is too
- * old and packages the library untouched, which left tens of MB of DWARF in
- * the APK. Doing it here with --strip-unneeded keeps every dynamic symbol
- * (verified: JNI entry points still resolve through dlsym).
+ * AGP's own stripReleaseDebugSymbols task declined to touch these libraries
+ * ("Unable to strip the following libraries, packaging them as they are"),
+ * which shipped tens of MB of DWARF in the APK. The work is delegated to
+ * strip_native_libs.sh, which is testable on its own and fails loudly when a
+ * strip does nothing.
  */
-val stripNativeLibs by tasks.registering {
-    val ndkDir = android.ndkDirectory
-    val stripTool = File(ndkDir, "toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip")
-    val builtLibs = layout.buildDirectory.dir("intermediates/cxx/Release")
-    val jniOut = layout.buildDirectory.dir("intermediates/stripped_native_libs/release/out/lib/arm64-v8a")
-
-    doLast {
-        val sources = builtLibs.get().asFileTree.matching { it.include("**/$lib") }.files
-        if (sources.isEmpty()) {
-            throw GradleException("native library not found under ${builtLibs.get().asFile}")
-        }
-        if (!stripTool.exists()) {
-            throw GradleException("llvm-strip not found at $stripTool")
-        }
-        val outDir = jniOut.get().asFile
-        outDir.mkdirs()
-        sources.forEach { src ->
-            val dst = File(outDir, src.name)
-            dst.writeBytes(src.readBytes())
-            providers.exec {
-                commandLine(stripTool.absolutePath, "--strip-unneeded", dst.absolutePath)
-            }.result.get().assertNormalExitValue()
-            logger.lifecycle("stripped ${dst.name}: ${src.length() / 1024} KiB -> ${dst.length() / 1024} KiB")
-        }
-    }
+val stripNativeLibs by tasks.registering(Exec::class) {
+    workingDir = rootProject.projectDir
+    commandLine(
+        "bash",
+        "strip_native_libs.sh",
+        layout.buildDirectory.dir("intermediates/cxx/Release").get().asFile.absolutePath,
+        layout.buildDirectory
+            .dir("intermediates/stripped_native_libs/release/out/lib/arm64-v8a")
+            .get().asFile.absolutePath
+    )
+    isIgnoreExitValue = false
 }
 
 tasks.matching { it.name == "mergeReleaseNativeLibs" }.configureEach {
