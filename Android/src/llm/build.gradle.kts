@@ -53,29 +53,3 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
 }
-
-/**
- * Strips the built .so files and stages them where AGP merges jniLibs.
- *
- * AGP's own stripReleaseDebugSymbols task declined to touch these libraries
- * ("Unable to strip the following libraries, packaging them as they are"),
- * which shipped tens of MB of DWARF in the APK. The work is delegated to
- * strip_native_libs.sh, which is testable on its own and fails loudly when a
- * strip does nothing.
- */
-val stripNativeLibs by tasks.registering(Exec::class) {
-    workingDir = rootProject.projectDir
-    commandLine(
-        "bash",
-        "strip_native_libs.sh",
-        layout.buildDirectory.dir("intermediates/cxx/Release").get().asFile.absolutePath,
-        layout.buildDirectory
-            .dir("intermediates/stripped_native_libs/release/out/lib/arm64-v8a")
-            .get().asFile.absolutePath
-    )
-    isIgnoreExitValue = false
-}
-
-tasks.matching { it.name == "mergeReleaseNativeLibs" }.configureEach {
-    dependsOn(stripNativeLibs)
-}

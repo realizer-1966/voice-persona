@@ -64,3 +64,23 @@ target_link_libraries(voicepersona_asr PRIVATE
     log
     android
 )
+
+
+# Strip debug symbols at link time. AGP's stripReleaseDebugSymbols declines to
+# handle these libraries ("packaging them as they are"), and a separate Gradle
+# task loses the race against it, so the DWARF must be gone before AGP sees the
+# file. --strip-unneeded keeps the dynamic symbol table the JVM resolves.
+if(NOT CMAKE_STRIP)
+    message(FATAL_ERROR "CMAKE_STRIP is unset; refusing to ship unstripped native libraries")
+endif()
+add_custom_command(TARGET voicepersona_asr POST_BUILD
+    COMMAND "${CMAKE_STRIP}" --strip-unneeded "$<TARGET_FILE:voicepersona_asr>"
+    COMMENT "Stripping debug symbols from voicepersona_asr"
+)
+# libomp arrives as a prebuilt target from the NDK toolchain.
+if(TARGET omp)
+    add_custom_command(TARGET omp POST_BUILD
+        COMMAND "${CMAKE_STRIP}" --strip-unneeded "$<TARGET_FILE:omp>"
+        COMMENT "Stripping debug symbols from omp"
+    )
+endif()
