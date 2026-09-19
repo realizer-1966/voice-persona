@@ -114,7 +114,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun asrSpec(): ModelSpec = ModelCatalog.speech
         .firstOrNull { it.id == asrModelId } ?: ModelCatalog.asrDefault
 
-    var useDiarizer: Boolean
+    // Named with a prefix: a `useDiarizer` property would generate a
+    // setUseDiarizer(...) setter that clashes with the function below.
+    private var diarizerEnabled: Boolean
         get() = AppPrefs.get(getApplication(), "use_diarizer", "0") == "1"
         set(value) {
             AppPrefs.set(getApplication(), "use_diarizer", if (value) "1" else "0")
@@ -122,7 +124,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Turns speaker separation on or off and (re)loads the diarizer model. */
     fun setUseDiarizer(enabled: Boolean) {
-        useDiarizer = enabled
+        diarizerEnabled = enabled
         _state.update { it.copy(useDiarizer = enabled) }
         viewModelScope.launch {
             if (enabled) {
@@ -158,7 +160,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshModels() {
         val context = getApplication<Application>()
-        val need = ModelCatalog.required(llmSpec(), asrSpec(), useDiarizer)
+        val need = ModelCatalog.required(llmSpec(), asrSpec(), diarizerEnabled)
         val ready = need.count { ModelStore.state(context, it) == ModelState.READY }
         _state.update {
             it.copy(
@@ -177,7 +179,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val context = getApplication<Application>()
             // Only the selected LLM is fetched, so a 4B choice does not drag 1.7B in.
-            val wanted = ModelCatalog.required(llmSpec(), asrSpec(), useDiarizer)
+            val wanted = ModelCatalog.required(llmSpec(), asrSpec(), diarizerEnabled)
             for (spec in wanted) {
                 if (ModelStore.state(context, spec) == ModelState.READY) continue
                 _state.update {
@@ -195,7 +197,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
             }
-            val need = ModelCatalog.required(llmSpec(), asrSpec(), useDiarizer)
+            val need = ModelCatalog.required(llmSpec(), asrSpec(), diarizerEnabled)
             val ready = need.count { ModelStore.state(context, it) == ModelState.READY }
             _state.update {
                 it.copy(downloading = null, modelsReady = ready, modelsTotal = need.size,
