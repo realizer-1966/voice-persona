@@ -61,7 +61,8 @@ jobs:
           set -euo pipefail
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
           echo "APK: $APK ($(stat -c%s "$APK") bytes)"
-          python3 .github/scripts/verify_native_strip.py "$APK" "$ANDROID_NDK_HOME"
+          # The job defaults to Android/src, so address the script from the repo root.
+          python3 "$GITHUB_WORKSPACE/.github/scripts/verify_native_strip.py" "$APK" "$ANDROID_NDK_HOME"
 
       - name: Upload APK
         if: success()
