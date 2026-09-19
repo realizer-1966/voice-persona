@@ -323,6 +323,8 @@ private fun ComposerRow(
 @Composable
 private fun PersonaScreen(state: UiState, vm: AppViewModel) {
     var pendingLabel by remember { mutableStateOf<String?>(null) }
+    // Declared before the launcher: the callback closes over it.
+    var selectedLabel by remember { mutableStateOf("녹음 파일") }
     val pickAudio = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -332,7 +334,6 @@ private fun PersonaScreen(state: UiState, vm: AppViewModel) {
         }
         pendingLabel = null
     }
-    var selectedLabel by remember { mutableStateOf("녹음 파일") }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),

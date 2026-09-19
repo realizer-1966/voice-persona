@@ -87,7 +87,7 @@ class SpeechToText {
             }
         }
 
-        val pieces = ArrayList<String>(merged.size)
+        val pieces = ArrayList<FloatArray>(merged.size)
         var cursor = 0
         for ((s, e) in merged) {
             if (s > cursor) pieces.add(silence(s - cursor))
