@@ -1,27 +1,33 @@
 package com.voicepersona.app
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.Serializable
 
 /**
- * Turns raw conversation transcripts into a [Persona] with the local 1.7B model.
+ * Turns raw conversation transcripts into a [Persona] with the local model.
  *
- * The model is small, so the job is split in two: one call drafts the persona
- * as JSON, and a deterministic fallback derives fields from the transcript when
- * the model's JSON does not survive parsing.
+ * Everything here is shaped by measurements on Ternary-Bonsai 4B:
+ *
+ *  - Asking for a JSON object whose empty schema appears in the prompt makes the
+ *    model echo that blank schema back, so no field is ever filled. Each field is
+ *    therefore its own short question with a one-line answer.
+ *  - ASR output is a single paragraph: no newlines and no speaker labels, so
+ *    exchanges are recovered by splitting sentences, not lines.
+ *  - Real question/answer turns taken from the recording transfer style far
+ *    better than sentences quoted in the system prompt (quoted text is copied).
+ *
+ * When the model answers badly the result is still a usable persona: the
+ * transcript, the example turns and the deterministic fallback carry it.
  */
 class PersonaExtractor(private val llm: ChatLlm) {
 
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-
-    private val instruction = """
-        너는 대화 녹취록을 분석해 화자의 페르소나를 뽑아내는 도구다.
-        반드시 아래 JSON 하나만 출력한다. 설명, 인사, 코드블록 기호는 쓰지 않는다.
-        {"name":"","tone":"","speech_style":"","traits":[],"catchphrases":[],"background":"","relationship":""}
-    """.trimIndent()
+    private val questionTone =
+        "녹취록 화자의 말투를 한 줄로만 답한다. 예: 반말, 문장이 짧고 장난스러움"
+    private val questionTraits =
+        "녹취록 화자의 성격을 쉼표로 구분해 3개만 답한다."
+    private val questionPhrases =
+        "녹취록에 실제로 반복해 나온 표현을 쉼표로 3개만 답한다. 없으면 '없음'이라고 답한다."
+    private val questionBackground =
+        "녹취록만 보고 화자에 대해 추측되는 배경 한 줄만 답한다. 모르면 '없음'이라고 답한다."
 
     suspend fun extract(
         transcript: String,
@@ -35,72 +41,92 @@ class PersonaExtractor(private val llm: ChatLlm) {
         // Keep the prompt inside the small model's comfort zone.
         val excerpt = if (cleaned.length > 2400) cleaned.take(2400) else cleaned
 
-        onProgress("페르소나 초안 생성 중")
-        var draftText = ""
-        runCatching {
-            llm.setSystem(instruction)
-            draftText = llm.send("녹취록:\n$excerpt\n\n위 화자의 페르소나 JSON:")
-        }.onFailure { draftText = "" }
+        onProgress("말투 분석 중")
+        val tone = ask(questionTone, excerpt)
 
-        onProgress("요약 다듬는 중")
-        var summary = ""
-        runCatching {
-            llm.setSystem(
-                "너는 녹취록을 요약하는 도구다. 한국어로 2문장 이내로만 답한다."
-            )
-            summary = llm.send(
-                "다음 대화의 화자 성격과 말투를 두 문장으로 요약해줘:\n" + excerpt.take(1200)
-            )
-        }.onFailure { summary = "" }
+        onProgress("성격 분석 중")
+        val traits = splitList(ask(questionTraits, excerpt))
 
-        val parsed = parseDraft(draftText)
+        onProgress("자주 쓰는 표현 찾는 중")
+        val phrases = splitList(ask(questionPhrases, excerpt)).filterNot { it.contains("없") }
+
+        onProgress("배경 정리 중")
+        val background = ask(questionBackground, excerpt).let {
+            if (it.contains("없음") || it.contains("없다")) "" else it
+        }
+
+        onProgress("예시 대화 뽑는 중")
+        // Examples help when the recording is a real exchange, but on narration
+        // the model copies whole sentences out of them (measured). So they are
+        // only attached when the transcript actually looks conversational.
+        val conversational = looksConversational(cleaned)
+        val examples = if (conversational) pickExampleTurns(cleaned) else emptyList()
         val fallback = heuristic(cleaned)
-
-        val name = parsed.first("name").ifBlank { fallback.name }
-        val tone = parsed.first("tone").ifBlank { summary.take(120).ifBlank { fallback.tone } }
-        val style = parsed.first("speech_style").ifBlank { fallback.speechStyle }
-        val traits = parsed.second("traits").ifEmpty { fallback.traits }
-        val catchphrases = parsed.second("catchphrases").ifEmpty { fallback.catchphrases }
-        val background = parsed.first("background").ifBlank { fallback.background }
-
-        val examples = pickExampleTurns(cleaned)
 
         val id = "p" + System.currentTimeMillis().toString(36)
         return Persona(
             id = id,
-            name = name.ifBlank { "페르소나 " + id.takeLast(4) },
-            tone = tone,
-            speechStyle = style,
-            traits = traits.take(6),
-            catchphrases = catchphrases.take(8),
+            name = "페르소나 " + id.takeLast(4),
+            // A blank model answer falls back to what the transcript itself shows.
+            tone = tone.ifBlank { fallback.tone },
+            speechStyle = fallback.speechStyle,
+            traits = (if (traits.isEmpty()) fallback.traits else traits).take(6),
+            catchphrases = (if (phrases.isEmpty()) fallback.catchphrases else phrases).take(8),
             background = background,
-            relationship = parsed.first("relationship"),
+            relationship = "",
             sourceNote = sourceNote,
             transcript = cleaned,
             exampleUser = examples.map { it.first },
             exampleReply = examples.map { it.second },
+            conversationalSource = conversational,
         )
     }
 
     /**
-     * Lifts short question/answer pairs out of the transcript so the chat model
-     * can be given real conversation turns. Measured on Ternary-Bonsai: a few
-     * real turns carry the style far better than a described one, while a
-     * sample sentence quoted inside the system prompt just gets copied.
+     * Heuristic for "is this a conversation rather than a monologue or a read
+     * passage": short sentences plus a question somewhere.
+     */
+    private fun looksConversational(transcript: String): Boolean {
+        val sentences = transcript.split(Regex("(?<=[.!?])\\s+"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        if (sentences.size < 3) return false
+        val short = sentences.count { it.length <= 45 }
+        val hasQuestion = transcript.contains("?") || transcript.contains("？")
+        return hasQuestion && short >= sentences.size / 2
+    }
+
+    /** One question, one short answer. Returns "" when the model fails. */
+    private suspend fun ask(question: String, excerpt: String): String {
+        var answer = ""
+        runCatching {
+            llm.setSystem("너는 녹취록을 분석한다. 물음에만 짧게 답한다.")
+            answer = llm.send("$question\n\n녹취록:\n$excerpt")
+        }
+        return answer.trim().lines().firstOrNull().orEmpty().trim()
+    }
+
+    private fun splitList(text: String): List<String> =
+        text.split(',', '，', '·', '\n')
+            .map { it.trim().trim('-', '*', '"', '\'') }
+            .filter { it.isNotBlank() && it.length <= 30 }
+
+    /**
+     * Lifts question/answer pairs out of the transcript so the chat model gets
+     * real conversation turns. ASR output has no line breaks and no speaker
+     * labels, so sentences are the unit here.
      */
     private fun pickExampleTurns(transcript: String): List<Pair<String, String>> {
-        val lines = transcript.split('\n')
+        val sentences = transcript
+            .split(Regex("(?<=[.!?])\\s+"))
             .map { it.trim() }
-            .filter { it.length in 3..60 }
+            .filter { it.length in 4..60 }
 
         val turns = ArrayList<Pair<String, String>>()
-        for (i in 0 until lines.size - 1) {
-            val current = lines[i]
-            var next = lines[i + 1]
-            // Drop a leading speaker label like "B:" or "나:".
-            next = next.replace(Regex("^[A-Za-z가-힣]{1,4}\\s*[:：]\\s*"), "")
-            if (next.length !in 3..60) continue
-            // The reply should look like a short utterance, not a question.
+        for (i in 0 until sentences.size - 1) {
+            val current = sentences[i]
+            val next = sentences[i + 1]
+            // A statement closing a question reads as a natural exchange.
             if (next.endsWith("?") || next.endsWith("？")) continue
             turns.add(current to next)
             if (turns.size >= 3) break
@@ -108,61 +134,17 @@ class PersonaExtractor(private val llm: ChatLlm) {
         return turns
     }
 
-    /** Returns (single values, list values) recovered from the model output. */
-    private fun parseDraft(raw: String): Pair<(String) -> String, (String) -> List<String>> {
-        val singles = mutableMapOf<String, String>()
-        val lists = mutableMapOf<String, List<String>>()
-
-        val start = raw.indexOf('{')
-        val end = raw.lastIndexOf('}')
-        if (start >= 0 && end > start) {
-            val candidate = raw.substring(start, end + 1)
-            runCatching {
-                val obj = json.parseToJsonElement(candidate) as JsonObject
-                obj.forEach { (key, value) ->
-                    when (value) {
-                        is JsonArray -> lists[key] = value.mapNotNull { it.jsonPrimitive.contentOrNull }
-                            .filter { it.isNotBlank() }
-                        is JsonObject -> Unit
-                        else -> {
-                            val text = value.jsonPrimitive.contentOrNull ?: ""
-                            if (text.isNotBlank()) singles[key] = text.trim()
-                        }
-                    }
-                }
-            }
-        }
-        // Tolerate half-broken JSON by scraping "key":"value" pairs.
-        if (singles.isEmpty()) {
-            val fieldRegex = Regex("\"([a-z_]+)\"\\s*:\\s*\"([^\"]{1,200})\"")
-            fieldRegex.findAll(raw).forEach { m ->
-                singles.putIfAbsent(m.groupValues[1], m.groupValues[2].trim())
-            }
-        }
-        if (lists.isEmpty()) {
-            val listRegex = Regex("\"([a-z_]+)\"\\s*:\\s*\\[([^\\]]{0,400})\\]")
-            listRegex.findAll(raw).forEach { m ->
-                val items = m.groupValues[2].split(',')
-                    .map { it.trim().trim('"', '\'', ' ') }
-                    .filter { it.isNotBlank() }
-                if (items.isNotEmpty()) lists.putIfAbsent(m.groupValues[1], items)
-            }
-        }
-        return Pair({ key -> singles[key] ?: "" }, { key -> lists[key] ?: emptyList() })
-    }
-
     /** Language-only fallback that never fails, so a persona is always produced. */
     private fun heuristic(transcript: String): Persona {
-        val sentences = transcript.split(Regex("[.!?。！？\\n]+"))
+        val sentences = transcript.split(Regex("[.!?。！？\n]+"))
             .map { it.trim() }
             .filter { it.length in 2..80 }
 
         val phrases = mutableListOf<String>()
-        val laughTokens = listOf("ㅋㅋ", "ㅎㅎ", "ㅠㅠ", "ㅇㅇ", "진짜", "완전", "그니까", "아니")
-        for (token in laughTokens) {
+        val habitual = listOf("ㅋㅋ", "ㅎㅎ", "ㅠㅠ", "ㅇㅇ", "진짜", "완전", "그니까", "아니")
+        for (token in habitual) {
             if (transcript.contains(token)) phrases.add(token)
         }
-        // Short repeated fragments read as habitual expressions.
         sentences.groupingBy { it }.eachCount()
             .filter { (s, n) -> n >= 2 && s.length <= 12 }
             .keys

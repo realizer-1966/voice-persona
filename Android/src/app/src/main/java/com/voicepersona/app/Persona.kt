@@ -23,6 +23,8 @@ data class Persona(
     /** Short exchanges lifted from the recording, used as chat examples. */
     val exampleUser: List<String> = emptyList(),
     val exampleReply: List<String> = emptyList(),
+    /** False when the recording was narration, which transfers poorly. */
+    val conversationalSource: Boolean = true,
     val createdAt: Long = System.currentTimeMillis(),
 ) {
     /**

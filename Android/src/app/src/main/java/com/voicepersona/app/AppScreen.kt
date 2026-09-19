@@ -339,11 +339,31 @@ private fun PersonaScreen(state: UiState, vm: AppViewModel) {
         Text("페르소나", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "기존 대화 녹음 파일을 고르면, 음성을 글로 옮기고 " +
-                "그 내용으로 말투·성격·자주 쓰는 표현을 뽑아 페르소나를 만듭니다.",
+            text = "대화 녹음 파일을 고르면 음성을 글로 옮기고, 그 내용으로 " +
+                "말투·성격·자주 쓰는 표현을 뽑아 페르소나를 만듭니다.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(8.dp))
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(10.dp)) {
+                Text("녹음 파일에 담겨야 하는 것", style = MaterialTheme.typography.labelSmall)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "• 페르소나로 삼을 사람이 실제로 말한 내용\n" +
+                        "• 길수록 좋음 (2~3분 이상, 최대 87분)\n" +
+                        "• 두 사람 이상이 주고받는 대화면 더 좋음\n" +
+                        "• 뉴스 낭독·강의처럼 혼자 읽은 녹음은 말투 전이가 약함",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         Spacer(Modifier.height(12.dp))
 
         Button(
@@ -474,6 +494,14 @@ private fun DraftEditor(draft: Persona, vm: AppViewModel) {
             OutlinedTextField(background, { background = it }, label = { Text("배경") }, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
 
+            if (!draft.conversationalSource) {
+                Text(
+                    "이 녹음은 대화가 아니라 낭독으로 보입니다. 말투 반영이 약할 수 있습니다.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
             if (draft.transcript.isNotBlank()) {
                 Text("녹취록 미리보기", style = MaterialTheme.typography.labelSmall)
                 Text(
