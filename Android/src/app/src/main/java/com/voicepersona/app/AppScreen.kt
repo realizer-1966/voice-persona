@@ -716,7 +716,10 @@ private fun SetupScreen(state: UiState, vm: AppViewModel) {
                 onClick = { vm.downloadModels() },
                 enabled = !state.modelsOk && !state.busy,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (state.modelsOk) "모델 준비 완료" else "모델 내려받기 (약 645 MB)") }
+            ) {
+                val totalMb = state.requiredModels.sumOf { it.approxBytes } / 1_000_000
+                Text(if (state.modelsOk) "모델 준비 완료" else "모델 내려받기 (약 $totalMb MB)")
+            }
         }
 
         Spacer(Modifier.height(8.dp))

@@ -88,6 +88,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     personas = personas,
                     activePersonaId = active?.takeIf { id -> personas.any { p -> p.id == id } },
                     ttsEnabled = AppPrefs.ttsEnabled(getApplication()),
+                    // 스위치는 prefs에서 복원해야 한다: 안 그러면 화면은 OFF인데
+                    // 다운로드 계산은 3개 모델을 기대해 2/3에서 멈춘다.
+                    useDiarizer = diarizerEnabled,
                 )
             }
             if (_state.value.modelsOk) loadEngines()
@@ -126,9 +129,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setUseDiarizer(enabled: Boolean) {
         diarizerEnabled = enabled
         _state.update { it.copy(useDiarizer = enabled) }
+        // 모델 목록·다운로드 대상이 스위치를 따라야 한다.
+        refreshModels()
         viewModelScope.launch {
             if (enabled) {
-                loadDiarizerIfNeeded()
+                if (!loadDiarizerIfNeeded()) {
+                    // 모델 파일이 없거나 로드 실패: Setup에서 내려받도록 안내.
+                    val context = getApplication<Application>()
+                    val st = ModelStore.state(context, ModelCatalog.diarizer)
+                    _state.update {
+                        it.copy(
+                            diarizationNote = if (st != ModelState.READY)
+                                "화자 분리 모델(139 MB)이 없습니다. 설정 화면에서 내려받으세요."
+                            else "",
+                            status = if (st != ModelState.READY) "" else "화자 분리 모델 로드 실패",
+                        )
+                    }
+                }
             } else {
                 stt.unload()
                 loadAsr()
@@ -166,6 +183,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
                 modelsReady = ready,
                 modelsTotal = need.size,
+                // Setup 화면의 모델 목록·다운로드가 이 목록을 그대로 그린다.
+                // 갱신하지 않으면 화자 분리 모델이 목록에 영원히 없어 다운로드
+                // 경로 자체가 생기지 않는다.
+                requiredModels = need,
                 selectedLlmId = llmModelId,
                 selectedAsrId = asrModelId,
                 asrNote = asrSpec().note,
@@ -466,9 +487,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
                 _state.update { it.copy(personaProgress = "화자 구분 중 (${seconds}초)") }
                 if (!loadDiarizerIfNeeded()) {
+                    val context = getApplication<Application>()
+                    val missing = ModelStore.state(context, ModelCatalog.diarizer) != ModelState.READY
                     _state.update {
                         it.copy(
-                            diarizationNote = "화자 분리 모델을 불러오지 못했습니다. 전체를 한 화자로 봅니다.",
+                            diarizationNote = if (missing)
+                                "화자 분리 모델(139 MB)이 없습니다. 설정 화면에서 내려받으세요."
+                            else "화자 분리 모델을 불러오지 못했습니다. 전체를 한 화자로 봅니다.",
                         )
                     }
                     buildPersonaFromAudio(label)
