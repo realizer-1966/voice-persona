@@ -56,8 +56,56 @@ jobs:
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
-      - name: Report APK size
-        run: ls -la app/build/outputs/apk/release/
+      - name: Verify native libraries are stripped
+        run: |
+          set -euo pipefail
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          echo "APK: $APK ($(stat -c%s "$APK") bytes)"
+          # Pull the .so files out and prove there is no DWARF left and that the
+          # JNI entry points survived the strip.
+          python3 - "$APK" <<'PY'
+          import sys, zipfile, subprocess, tempfile, os
+
+          apk = sys.argv[1]
+          readelf = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          want_symbols = ["Java_com_voicepersona_llm_LlamaBridge_nativeLoad",
+                          "Java_com_voicepersona_asr_AsrBridge_nativeTranscribe"]
+
+          failures = []
+          with zipfile.ZipFile(apk) as z:
+              libs = [n for n in z.namelist() if n.endswith(".so") and "voicepersona" in n]
+              if len(libs) != 2:
+                  failures.append(f"expected 2 app libraries, found {libs}")
+              total = 0
+              for name in libs:
+                  with tempfile.NamedTemporaryFile(suffix=".so", delete=False) as f:
+                      f.write(z.read(name))
+                      path = f.name
+                  total += os.path.getsize(path)
+                  sections = subprocess.run([readelf, "-S", path], capture_output=True, text=True).stdout
+                  dwarf = sections.count(".debug_")
+                  syms = subprocess.run([readelf, "--dyn-syms", "-W", path],
+                                        capture_output=True, text=True).stdout
+                  print(f"{name}: {os.path.getsize(path)} bytes, debug sections={dwarf}")
+                  if dwarf:
+                      failures.append(f"{name} still carries {dwarf} debug sections")
+                  for sym in want_symbols:
+                      if sym in syms:
+                          print(f"  found exported symbol {sym}")
+                          break
+                  else:
+                      failures.append(f"{name} exports none of {want_symbols}")
+              print(f"total native payload: {total} bytes")
+              # A stripped pair lands well under this; unstripped was ~104 MiB.
+              if total > 70 * 1024 * 1024:
+                  failures.append(f"native payload still {total} bytes, strip did not take effect")
+          if failures:
+              print("FAILURES:")
+              for f in failures:
+                  print(" -", f)
+              sys.exit(1)
+          print("native library verification passed")
+          PY
 
       - name: Upload APK
         if: success()
