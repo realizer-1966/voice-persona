@@ -327,11 +327,12 @@ private fun PersonaScreen(state: UiState, vm: AppViewModel) {
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            val label = pendingLabel ?: uri.lastPathSegment.orEmpty()
-            vm.buildPersonaFromAudio(uri, label)
+            selectedLabel = pendingLabel ?: uri.lastPathSegment.orEmpty()
+            vm.analyzeRecording(uri, selectedLabel)
         }
         pendingLabel = null
     }
+    var selectedLabel by remember { mutableStateOf("녹음 파일") }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
@@ -376,7 +377,19 @@ private fun PersonaScreen(state: UiState, vm: AppViewModel) {
         ) {
             Icon(Icons.Filled.Add, contentDescription = null)
             Spacer(Modifier.width(8.dp))
-            Text("녹음 파일로 페르소나 만들기")
+            Text(
+                if (state.useDiarizer) "통화 녹음에서 내 발화만 뽑기"
+                else "녹음 파일로 페르소나 만들기"
+            )
+        }
+
+        if (state.diarizationNote.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                state.diarizationNote,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
         }
 
         if (state.personaBusy || state.personaProgress.isNotBlank()) {
@@ -388,6 +401,32 @@ private fun PersonaScreen(state: UiState, vm: AppViewModel) {
                 }
                 Text(state.personaProgress, style = MaterialTheme.typography.bodyMedium)
             }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("화자 구분 사용", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "통화 녹음처럼 여러 사람이 섞인 파일에서 화자를 나눕니다",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = state.useDiarizer,
+                onCheckedChange = { vm.setUseDiarizer(it) },
+                enabled = !state.personaBusy,
+            )
+        }
+
+        state.speakerChoices?.let { choices ->
+            Spacer(Modifier.height(14.dp))
+            SpeakerChooser(choices, state.chosenSpeakerId, vm, onConfirm = {
+                vm.buildPersonaFromAudio(selectedLabel)
+            })
         }
 
         state.extractedDraft?.let { draft ->
@@ -461,6 +500,63 @@ private fun PersonaScreen(state: UiState, vm: AppViewModel) {
                 enabled = state.activePersonaId != null,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("기본 대화 상대로 되돌리기") }
+        }
+    }
+}
+
+@Composable
+private fun SpeakerChooser(
+    choices: List<SpeakerChoice>,
+    chosen: Int?,
+    vm: AppViewModel,
+    onConfirm: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text("화자 선택", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "녹음에서 찾은 화자입니다. 목소리 미리보기를 듣고 내 발화를 고르세요.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            choices.forEach { choice ->
+                val selected = choice.speakerId == chosen
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "화자 ${choice.speakerId} · ${choice.seconds}초",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        if (choice.sampleLine.isNotBlank()) {
+                            Text(
+                                choice.sampleLine,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (selected) {
+                        Icon(Icons.Filled.Check, contentDescription = "선택됨")
+                    } else {
+                        TextButton(onClick = { vm.chooseSpeaker(choice.speakerId) }) { Text("선택") }
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = onConfirm, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    if (chosen == null) "전체 내용으로 페르소나 만들기"
+                    else "화자 $chosen 발화로 페르소나 만들기"
+                )
+            }
         }
     }
 }

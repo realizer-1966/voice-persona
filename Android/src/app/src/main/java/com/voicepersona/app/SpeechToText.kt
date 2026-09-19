@@ -38,6 +38,79 @@ class SpeechToText {
 
     suspend fun isLoaded(): Boolean = lock.withLock { handle != 0L && AsrBridge.nativeIsLoaded(handle) }
 
+    suspend fun loadDiarizer(model: File, nThreads: Int): Boolean = lock.withLock {
+        withContext(Dispatchers.Default) {
+            if (handle == 0L) return@withContext false
+            val info = AsrBridge.nativeLoadDiarizer(handle, model.absolutePath, nThreads)
+            !info.startsWith("ERR:")
+        }
+    }
+
+    /** Speaker spans as (startMs, endMs, speakerId). */
+    suspend fun diarize(pcm: FloatArray): List<Triple<Int, Int, Int>> = lock.withLock {
+        withContext(Dispatchers.Default) {
+            if (handle == 0L) return@withContext emptyList()
+            val flat = AsrBridge.nativeDiarize(handle, pcm, pcm.size) ?: return@withContext emptyList()
+            (0 until flat.size / 3).map { i ->
+                Triple(flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2])
+            }
+        }
+    }
+
+    /**
+     * Transcribes only the spans belonging to [speakerId], so a phone call can
+     * be reduced to one person's own words.
+     *
+     * The spans are padded and merged before being handed to the model: cutting
+     * exactly on a boundary clips the first phoneme and costs accuracy.
+     */
+    suspend fun transcribeSpeaker(
+        pcm: FloatArray,
+        spans: List<Triple<Int, Int, Int>>,
+        speakerId: Int,
+    ): String {
+        val mine = spans.filter { it.third == speakerId }.sortedBy { it.first }
+        if (mine.isEmpty()) return ""
+
+        val padMs = 120
+        val gapMs = 400
+        val merged = ArrayList<Pair<Int, Int>>()
+        for ((start, end, _) in mine) {
+            val s = ((start - padMs).coerceAtLeast(0)) * SAMPLE_RATE / 1000
+            val e = ((end + padMs) * SAMPLE_RATE / 1000).coerceAtMost(pcm.size)
+            if (s >= e) continue
+            val last = merged.lastOrNull()
+            if (last != null && s - last.second <= gapMs * SAMPLE_RATE / 1000) {
+                merged[merged.size - 1] = last.first to e
+            } else {
+                merged.add(s to e)
+            }
+        }
+
+        val pieces = ArrayList<String>(merged.size)
+        var cursor = 0
+        for ((s, e) in merged) {
+            if (s > cursor) pieces.add(silence(s - cursor))
+            pieces.add(pcm.copyOfRange(s, e))
+            cursor = e
+        }
+        val joined = FloatArray(pieces.sumOf { it.size })
+        var at = 0
+        for (piece in pieces) {
+            System.arraycopy(piece, 0, joined, at, piece.size)
+            at += piece.size
+        }
+        return transcribe(joined)
+    }
+
+    private fun silence(samples: Int): FloatArray {
+        // 0.25 s of silence is enough to stop the model gluing two turns.
+        val quiet = FloatArray(samples.coerceAtMost(SAMPLE_RATE / 4))
+        val total = FloatArray(samples)
+        System.arraycopy(quiet, 0, total, 0, quiet.size)
+        return total
+    }
+
     suspend fun unload() = lock.withLock {
         if (handle != 0L) {
             AsrBridge.nativeUnload(handle)

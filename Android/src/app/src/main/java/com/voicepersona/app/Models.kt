@@ -87,13 +87,31 @@ object ModelCatalog {
         note = "한국어·일본어 자동 감지, 긴 녹음 한 번에 처리",
     )
 
+    // Speaker diarization runs beside the ASR model. It emits who-spoke-when, not
+    // text, and is what lets a phone call be reduced to one person's own words.
+    val diarizer = ModelSpec(
+        id = "diar-sortformer-4spk",
+        label = "화자 분리 (Sortformer 4인)",
+        url = "$HF/handy-computer/diar_streaming_sortformer_4spk-v2.1-gguf/resolve/main/" +
+            "diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf",
+        fileName = "diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf",
+        approxBytes = 139_310_336L,
+        maxAudioSeconds = 60 * 60,
+        note = "통화 녹음에서 화자를 구분 (최대 4명)",
+    )
+
     val speech = listOf(asrQwen3, asrKo, asrJa)
 
     val asrDefault = asrQwen3
 
     /** What the app needs on disk for the current model choices. */
-    fun required(selectedLlm: ModelSpec, selectedAsr: ModelSpec): List<ModelSpec> =
-        listOf(selectedLlm, selectedAsr)
+    fun required(
+        selectedLlm: ModelSpec,
+        selectedAsr: ModelSpec,
+        withDiarizer: Boolean = false,
+    ): List<ModelSpec> =
+        if (withDiarizer) listOf(selectedLlm, selectedAsr, diarizer)
+        else listOf(selectedLlm, selectedAsr)
 }
 
 fun modelsDir(context: Context): File =

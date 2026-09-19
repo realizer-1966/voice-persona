@@ -83,6 +83,54 @@ Java_com_voicepersona_asr_AsrBridge_nativeTranscribe(JNIEnv * env, jclass, jlong
     return jniutil::to_java(env, text);
 }
 
+// Loads a speaker diarizer beside the ASR model. Returns info or "ERR: ...".
+JNIEXPORT jstring JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeLoadDiarizer(JNIEnv * env, jclass, jlong h,
+                                                      jstring path, jint n_threads) {
+    AsrEngine * engine = engine_from(h);
+    if (!engine) {
+        return jniutil::to_java(env, "ERR: null handle");
+    }
+    std::string err;
+    if (!engine->load_diarizer(jniutil::to_std(env, path), n_threads, err)) {
+        return jniutil::to_java(env, "ERR: " + err);
+    }
+    return jniutil::to_java(env, "diarizer ready");
+}
+
+// Returns int[3 * n]: t0_ms, t1_ms, speaker_id per speaker segment.
+JNIEXPORT jintArray JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeDiarize(JNIEnv * env, jclass, jlong h,
+                                                 jfloatArray pcm, jint n_samples) {
+    AsrEngine * engine = engine_from(h);
+    if (!engine || pcm == nullptr || n_samples <= 0) {
+        return nullptr;
+    }
+    jfloat * data = env->GetFloatArrayElements(pcm, nullptr);
+    if (!data) {
+        return nullptr;
+    }
+    std::string err;
+    const std::vector<voicepersona::SpeakerSpan> spans =
+        engine->diarize(data, (int) n_samples, err);
+    env->ReleaseFloatArrayElements(pcm, data, JNI_ABORT);
+
+    const jsize out_size = (jsize) (spans.size() * 3);
+    jintArray out = env->NewIntArray(out_size);
+    if (out == nullptr || spans.empty()) {
+        return out;
+    }
+    std::vector<jint> flat;
+    flat.reserve((size_t) out_size);
+    for (const auto & span : spans) {
+        flat.push_back((jint) span.t0_ms);
+        flat.push_back((jint) span.t1_ms);
+        flat.push_back((jint) span.speaker_id);
+    }
+    env->SetIntArrayRegion(out, 0, out_size, flat.data());
+    return out;
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_voicepersona_asr_AsrBridge_nativeInfo(JNIEnv * env, jclass, jlong h) {
     AsrEngine * engine = engine_from(h);

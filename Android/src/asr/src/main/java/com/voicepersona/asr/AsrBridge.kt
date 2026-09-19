@@ -16,5 +16,10 @@ object AsrBridge {
 
     /** [pcm] must be 16 kHz mono float32 in [-1, 1]. */
     external fun nativeTranscribe(handle: Long, pcm: FloatArray, nSamples: Int): String
+
+    external fun nativeLoadDiarizer(handle: Long, modelPath: String, nThreads: Int): String
+
+    /** Flat triples: t0_ms, t1_ms, speaker_id. Null when nothing was produced. */
+    external fun nativeDiarize(handle: Long, pcm: FloatArray, nSamples: Int): IntArray?
     external fun nativeInfo(handle: Long): String
 }

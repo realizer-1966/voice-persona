@@ -94,6 +94,9 @@ int main(int argc, char ** argv) {
     } else {
         std::printf("ASR info: %s\n", asr.info().c_str());
         for (int i = 3; i < argc; ++i) {
+            if (std::string(argv[i]).rfind("--", 0) == 0) {
+                continue;   // flag, not an audio path
+            }
             Wav w;
             if (!read_wav(argv[i], w)) { ++failures; continue; }
             std::printf("  %s (%d Hz, %.2fs)\n", argv[i], w.sample_rate,
@@ -102,6 +105,33 @@ int main(int argc, char ** argv) {
             if (!err.empty()) { std::printf("    ERROR: %s\n", err.c_str()); ++failures; }
             else if (text.empty()) { std::printf("    EMPTY TRANSCRIPT\n"); ++failures; }
             else { std::printf("    -> %s\n", text.c_str()); }
+        }
+    }
+
+    // ---- stage 1b: speaker diarization ----
+    bool want_diar = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--diar") {
+            want_diar = true;
+        }
+    }
+    if (want_diar) {
+        std::printf("\n=== diarization ===\n");
+        std::string derr;
+        if (!asr.load_diarizer("/root/voicepersona/models/diar-sortformer-4spk-Q8_0.gguf", 4, derr)) {
+            std::printf("diarizer load failed: %s\n", derr.c_str());
+            ++failures;
+        } else {
+            Wav w;
+            if (read_wav(argv[3], w)) {
+                const auto spans = asr.diarize(w.pcm.data(), (int) w.pcm.size(), derr);
+                std::printf("spans: %zu\n", spans.size());
+                for (size_t i = 0; i < spans.size() && i < 12; ++i) {
+                    std::printf("   %7d-%7d ms  speaker %d\n", spans[i].t0_ms,
+                                spans[i].t1_ms, spans[i].speaker_id);
+                }
+                if (spans.empty()) ++failures;
+            }
         }
     }
 

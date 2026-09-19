@@ -18,6 +18,13 @@ import java.io.File
 
 enum class ModelReadiness { NONE, LLM_ONLY, ASR_ONLY, PARTIAL, READY }
 
+/** One detected speaker in a recording: id plus how much they actually spoke. */
+data class SpeakerChoice(
+    val speakerId: Int,
+    val seconds: Int,
+    val sampleLine: String = "",
+)
+
 data class ChatMessage(
     val id: Long,
     val fromUser: Boolean,
@@ -49,6 +56,11 @@ data class UiState(
     val personaBusy: Boolean = false,
     val personaProgress: String = "",
     val extractedDraft: Persona? = null,
+    /** Set when a recording was analysed for speakers; null before that. */
+    val speakerChoices: List<SpeakerChoice>? = null,
+    val chosenSpeakerId: Int? = null,
+    val diarizationNote: String = "",
+    val useDiarizer: Boolean = false,
     val permissionNeeded: Boolean = false,
 ) {
     val modelsOk: Boolean get() = modelsTotal > 0 && modelsReady == modelsTotal
@@ -102,6 +114,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun asrSpec(): ModelSpec = ModelCatalog.speech
         .firstOrNull { it.id == asrModelId } ?: ModelCatalog.asrDefault
 
+    var useDiarizer: Boolean
+        get() = AppPrefs.get(getApplication(), "use_diarizer", "0") == "1"
+        set(value) {
+            AppPrefs.set(getApplication(), "use_diarizer", if (value) "1" else "0")
+        }
+
+    /** Turns speaker separation on or off and (re)loads the diarizer model. */
+    fun setUseDiarizer(enabled: Boolean) {
+        useDiarizer = enabled
+        _state.update { it.copy(useDiarizer = enabled) }
+        viewModelScope.launch {
+            if (enabled) {
+                loadDiarizerIfNeeded()
+            } else {
+                stt.unload()
+                loadAsr()
+            }
+        }
+    }
+
+    private suspend fun loadDiarizerIfNeeded(): Boolean {
+        val context = getApplication<Application>()
+        if (ModelStore.state(context, ModelCatalog.diarizer) != ModelState.READY) return false
+        return runCatching {
+            stt.loadDiarizer(
+                ModelCatalog.diarizer.file(context),
+                Runtime.getRuntime().availableProcessors().coerceIn(2, 6),
+            )
+        }.getOrDefault(false)
+    }
+
     fun setLlmModel(id: String) {
         if (id == llmModelId) return
         llmModelId = id
@@ -115,7 +158,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshModels() {
         val context = getApplication<Application>()
-        val need = ModelCatalog.required(llmSpec(), asrSpec())
+        val need = ModelCatalog.required(llmSpec(), asrSpec(), useDiarizer)
         val ready = need.count { ModelStore.state(context, it) == ModelState.READY }
         _state.update {
             it.copy(
@@ -134,7 +177,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val context = getApplication<Application>()
             // Only the selected LLM is fetched, so a 4B choice does not drag 1.7B in.
-            val wanted = ModelCatalog.required(llmSpec(), asrSpec())
+            val wanted = ModelCatalog.required(llmSpec(), asrSpec(), useDiarizer)
             for (spec in wanted) {
                 if (ModelStore.state(context, spec) == ModelState.READY) continue
                 _state.update {
@@ -152,7 +195,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
             }
-            val need = ModelCatalog.required(llmSpec(), asrSpec())
+            val need = ModelCatalog.required(llmSpec(), asrSpec(), useDiarizer)
             val ready = need.count { ModelStore.state(context, it) == ModelState.READY }
             _state.update {
                 it.copy(downloading = null, modelsReady = ready, modelsTotal = need.size,
@@ -350,6 +393,199 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // --------------------------------------------------------------- personas
 
+    /**
+     * Decoded 16 kHz mono audio for the recording being analysed, kept on disk.
+     * An hour of call audio is ~230 MB as float32, too much to hold in RAM, and
+     * the analysis is two steps (detect speakers, then transcribe one of them).
+     */
+    private fun analysisCacheFile(): File =
+        File(getApplication<Application>().cacheDir, "persona_analysis.pcm16")
+
+    private suspend fun saveAnalysisAudio(pcm: FloatArray) = withContext(Dispatchers.IO) {
+        val bytes = ByteArray(pcm.size * 2)
+        var at = 0
+        for (v in pcm) {
+            val s = (v.coerceIn(-1f, 1f) * 32767f).toInt()
+            bytes[at++] = (s and 0xFF).toByte()
+            bytes[at++] = ((s shr 8) and 0xFF).toByte()
+        }
+        analysisCacheFile().writeBytes(bytes)
+    }
+
+    private suspend fun loadAnalysisAudio(): FloatArray = withContext(Dispatchers.IO) {
+        val f = analysisCacheFile()
+        if (!f.exists()) return@withContext FloatArray(0)
+        val bytes = f.readBytes()
+        val out = FloatArray(bytes.size / 2)
+        for (i in out.indices) {
+            val lo = bytes[i * 2].toInt() and 0xFF
+            val hi = bytes[i * 2 + 1].toInt()
+            out[i] = ((hi shl 8) or lo).toShort().toInt() / 32768f
+        }
+        out
+    }
+
+    fun clearSpeakerChoice() {
+        _state.update { it.copy(speakerChoices = null, chosenSpeakerId = null, diarizationNote = "") }
+    }
+
+    /** Step 1: decode the recording and, when enabled, find who spoke when. */
+    fun analyzeRecording(uri: Uri, label: String) {
+        if (_state.value.personaBusy) return
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    personaBusy = true,
+                    personaProgress = "녹음 파일 여는 중",
+                    speakerChoices = null,
+                    chosenSpeakerId = null,
+                    diarizationNote = "",
+                    extractedDraft = null,
+                    status = "",
+                )
+            }
+            try {
+                val pcm = withContext(Dispatchers.IO) { AudioDecoder.decode(getApplication(), uri) }
+                if (pcm.size < SpeechToText.SAMPLE_RATE) {
+                    throw IllegalStateException("오디오가 너무 짧습니다")
+                }
+                saveAnalysisAudio(pcm)
+                val seconds = pcm.size / SpeechToText.SAMPLE_RATE
+                _state.update {
+                    it.copy(personaProgress = "음성 분석 준비 완료 (${seconds}초)")
+                }
+
+                if (!_state.value.useDiarizer) return@launch
+
+                _state.update { it.copy(personaProgress = "화자 구분 중 (${seconds}초)") }
+                if (!loadDiarizerIfNeeded()) {
+                    _state.update {
+                        it.copy(
+                            diarizationNote = "화자 분리 모델을 불러오지 못했습니다. 전체를 한 화자로 봅니다.",
+                            personaProgress = "",
+                        )
+                    }
+                    return@launch
+                }
+                val spans = stt.diarize(pcm)
+                if (spans.isEmpty()) {
+                    _state.update {
+                        it.copy(
+                            diarizationNote = "화자를 구분하지 못했습니다. 전체를 한 화자로 봅니다.",
+                            personaProgress = "",
+                        )
+                    }
+                    return@launch
+                }
+
+                // Group spans per speaker, and preview each with a short transcription
+                // so the user can tell which voice is theirs.
+                val grouped = spans.groupBy { it.third }
+                val choices = ArrayList<SpeakerChoice>()
+                for ((id, list) in grouped.toSortedMap()) {
+                    val totalMs = list.sumOf { it.second - it.first }
+                    val longest = list.maxByOrNull { it.second - it.first }
+                    var preview = ""
+                    if (longest != null) {
+                        _state.update {
+                            it.copy(personaProgress = "화자 ${id} 목소리 확인 중")
+                        }
+                        val end = (longest.second + 120) * SpeechToText.SAMPLE_RATE / 1000
+                        val start = (longest.first - 120).coerceAtLeast(0) * SpeechToText.SAMPLE_RATE / 1000
+                        val slice = pcm.copyOfRange(
+                            start.coerceAtLeast(0),
+                            end.coerceAtMost(pcm.size),
+                        )
+                        preview = runCatching { stt.transcribe(slice) }
+                            .getOrDefault("")
+                            .trim()
+                            .take(60)
+                    }
+                    choices.add(SpeakerChoice(id, totalMs / 1000, preview))
+                }
+
+                val best = choices.maxByOrNull { it.seconds }?.speakerId
+                _state.update {
+                    it.copy(
+                        speakerChoices = choices,
+                        chosenSpeakerId = best,
+                        diarizationNote = "화자 ${choices.size}명을 찾았습니다. 페르소나로 삼을 화자를 고르세요.",
+                        personaProgress = "",
+                    )
+                }
+            } catch (t: Throwable) {
+                _state.update { it.copy(personaProgress = "실패: ${t.message}") }
+            } finally {
+                _state.update { it.copy(personaBusy = false) }
+            }
+        }
+    }
+
+    fun chooseSpeaker(id: Int) {
+        _state.update { it.copy(chosenSpeakerId = id) }
+    }
+
+    /** Step 2: transcribe the chosen speaker (or everything) and draft a persona. */
+    fun buildPersonaFromAudio(label: String) {
+        if (_state.value.personaBusy) return
+        viewModelScope.launch {
+            _state.update {
+                it.copy(personaBusy = true, personaProgress = "녹취록 만드는 중", status = "")
+            }
+            try {
+                val pcm = loadAnalysisAudio()
+                if (pcm.isEmpty()) throw IllegalStateException("분석한 녹음이 없습니다")
+                val spec = asrSpec()
+                val seconds = pcm.size / SpeechToText.SAMPLE_RATE
+                val speakerId = _state.value.chosenSpeakerId
+                val spans = if (speakerId != null) stt.diarize(pcm) else emptyList()
+
+                val transcript = if (speakerId != null && spans.isNotEmpty()) {
+                    _state.update {
+                        it.copy(personaProgress = "화자 $speakerId 발화만 인식 중 (${seconds}초)")
+                    }
+                    stt.transcribeSpeaker(pcm, spans, speakerId)
+                } else {
+                    _state.update {
+                        it.copy(
+                            personaProgress = buildString {
+                                append("음성 인식 중 (")
+                                append(seconds)
+                                append("초")
+                                if (seconds > spec.maxAudioSeconds) {
+                                    append(", ")
+                                    append(spec.label)
+                                    append(" 한도 ")
+                                    append(spec.maxAudioSeconds)
+                                    append("초 → 나눠서 처리")
+                                }
+                                append(")")
+                            }
+                        )
+                    }
+                    stt.transcribe(pcm)
+                }
+                if (transcript.isBlank()) throw IllegalStateException("인식된 텍스트가 없습니다")
+
+                val extractor = PersonaExtractor(llm)
+                val persona = extractor.extract(transcript, label) { step ->
+                    _state.update { it.copy(personaProgress = step) }
+                }
+                _state.update {
+                    it.copy(
+                        extractedDraft = persona,
+                        personaProgress = "초안 완성",
+                        speakerChoices = null,
+                    )
+                }
+            } catch (t: Throwable) {
+                _state.update { it.copy(personaProgress = "실패: ${t.message}") }
+            } finally {
+                _state.update { it.copy(personaBusy = false) }
+            }
+        }
+    }
+
     fun refreshPersonas() {
         viewModelScope.launch {
             val personas = PersonaStore.list(getApplication())
@@ -372,57 +608,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 ?: "너는 사용자의 말에 자연스럽게 반응하는 한국어 대화 상대다. 짧게 답한다."
             // Persona style travels as real chat turns, not as quoted text.
             llm.setContext(prompt, persona?.examples() ?: emptyList())
-        }
-    }
-
-    /** Transcribes a user-picked recording, then drafts a persona from it. */
-    fun buildPersonaFromAudio(uri: Uri, label: String) {
-        if (_state.value.personaBusy) return
-        viewModelScope.launch {
-            _state.update {
-                it.copy(personaBusy = true, personaProgress = "녹음 파일 여는 중", status = "")
-            }
-            try {
-                val pcm = withContext(Dispatchers.IO) {
-                    AudioDecoder.decode(getApplication(), uri)
-                }
-                val seconds = pcm.size / SpeechToText.SAMPLE_RATE
-                if (pcm.size < SpeechToText.SAMPLE_RATE) {
-                    throw IllegalStateException("오디오가 너무 짧습니다")
-                }
-                val spec = asrSpec()
-                _state.update {
-                    it.copy(
-                        personaProgress = buildString {
-                            append("음성 인식 중 (")
-                            append(seconds)
-                            append("초")
-                            if (seconds > spec.maxAudioSeconds) {
-                                // Chunked automatically, but say so, because the
-                                // chunks are transcribed independently.
-                                append(", ")
-                                append(spec.label)
-                                append(" 한도 ")
-                                append(spec.maxAudioSeconds)
-                                append("초 → 나눠서 처리")
-                            }
-                            append(")")
-                        }
-                    )
-                }
-                val transcript = stt.transcribe(pcm)
-                if (transcript.isBlank()) throw IllegalStateException("인식된 텍스트가 없습니다")
-
-                val extractor = PersonaExtractor(llm)
-                val persona = extractor.extract(transcript, label) { step ->
-                    _state.update { it.copy(personaProgress = step) }
-                }
-                _state.update { it.copy(extractedDraft = persona, personaProgress = "초안 완성") }
-            } catch (t: Throwable) {
-                _state.update { it.copy(personaProgress = "실패: ${t.message}") }
-            } finally {
-                _state.update { it.copy(personaBusy = false) }
-            }
         }
     }
 

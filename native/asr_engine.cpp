@@ -12,6 +12,12 @@ struct AsrEngine::Impl {
     transcribe_session * session = nullptr;
     transcribe_model *   model   = nullptr;
     int                  n_threads = 4;
+
+    // Diarization is a second model with its own session; the two never run at
+    // the same time for one request, but keeping them separate keeps each
+    // model's KV state untouched.
+    transcribe_model *   diar_model   = nullptr;
+    transcribe_session * diar_session = nullptr;
 };
 
 AsrEngine::AsrEngine() : d(new Impl()) {}
@@ -31,6 +37,82 @@ void AsrEngine::unload() {
         transcribe_model_free(d->model);
         d->model = nullptr;
     }
+    if (d->diar_session) {
+        transcribe_session_free(d->diar_session);
+        d->diar_session = nullptr;
+    }
+    if (d->diar_model) {
+        transcribe_model_free(d->diar_model);
+        d->diar_model = nullptr;
+    }
+}
+
+bool AsrEngine::load_diarizer(const std::string & model_path, int n_threads, std::string & err) {
+    err.clear();
+    if (d->diar_session) {
+        transcribe_session_free(d->diar_session);
+        d->diar_session = nullptr;
+    }
+    if (d->diar_model) {
+        transcribe_model_free(d->diar_model);
+        d->diar_model = nullptr;
+    }
+
+    transcribe_model_load_params lp;
+    transcribe_model_load_params_init(&lp);
+    const transcribe_status rc_model =
+        transcribe_model_load_file(model_path.c_str(), &lp, &d->diar_model);
+    if (rc_model != TRANSCRIBE_OK || d->diar_model == nullptr) {
+        d->diar_model = nullptr;
+        err = "diarizer load failed: " + std::to_string((int) rc_model);
+        return false;
+    }
+
+    transcribe_session_params sp;
+    transcribe_session_params_init(&sp);
+    sp.n_threads = n_threads > 0 ? n_threads : 4;
+
+    const transcribe_status rc_sess = transcribe_session_init(d->diar_model, &sp, &d->diar_session);
+    if (rc_sess != TRANSCRIBE_OK || d->diar_session == nullptr) {
+        d->diar_session = nullptr;
+        transcribe_model_free(d->diar_model);
+        d->diar_model = nullptr;
+        err = "diarizer session failed: " + std::to_string((int) rc_sess);
+        return false;
+    }
+    return true;
+}
+
+bool AsrEngine::diarizer_loaded() const {
+    return d->diar_session != nullptr;
+}
+
+std::vector<SpeakerSpan> AsrEngine::diarize(const float * pcm, int n_samples, std::string & err) {
+    err.clear();
+    std::vector<SpeakerSpan> spans;
+    if (!d->diar_session) {
+        err = "diarizer not loaded";
+        return spans;
+    }
+    const transcribe_status rc = transcribe_run(d->diar_session, pcm, n_samples, nullptr);
+    if (rc != TRANSCRIBE_OK) {
+        err = "diarize run failed: " + std::to_string((int) rc);
+        return spans;
+    }
+    const int n = transcribe_n_speaker_segments(d->diar_session);
+    for (int i = 0; i < n; ++i) {
+        transcribe_speaker_segment seg;
+        transcribe_speaker_segment_init(&seg);
+        if (transcribe_get_speaker_segment(d->diar_session, i, &seg) != TRANSCRIBE_OK) {
+            continue;
+        }
+        SpeakerSpan out;
+        out.t0_ms      = (int) seg.t0_ms;
+        out.t1_ms      = (int) seg.t1_ms;
+        out.speaker_id = (int) seg.speaker_id;
+        spans.push_back(out);
+    }
+    return spans;
 }
 
 bool AsrEngine::loaded() const {
