@@ -162,12 +162,40 @@ std::string AsrEngine::transcribe(const float * pcm, int n_samples, std::string 
         return "";
     }
     const transcribe_status rc = transcribe_run(d->session, pcm, n_samples, nullptr);
+    if (rc == TRANSCRIBE_ERR_OUTPUT_TRUNCATED) {
+        // Generation budget exhausted (e.g. qwen3-asr's 256-token cap). The
+        // library discards the partial transcript, so the result is empty by
+        // design. This is a normal, recoverable outcome — NOT an error: the
+        // caller chunks tighter and retries, guided by last_run_truncated().
+        // Clearing err keeps the JNI "ERR:" exception path reserved for real
+        // failures.
+        return "";
+    }
     if (rc != TRANSCRIBE_OK) {
         err = "transcribe_run failed: " + std::to_string((int) rc);
         return "";
     }
     const char * text = transcribe_full_text(d->session);
     return text ? std::string(text) : std::string();
+}
+
+bool AsrEngine::last_run_truncated() const {
+    if (!d->session) {
+        return false;
+    }
+    return transcribe_was_truncated(d->session);
+}
+
+long long AsrEngine::max_audio_ms() const {
+    if (!d->session) {
+        return 0;
+    }
+    transcribe_session_limits limits;
+    transcribe_session_limits_init(&limits);
+    if (transcribe_session_get_limits(d->session, &limits) != TRANSCRIBE_OK) {
+        return 0;
+    }
+    return (long long) limits.effective_max_audio_ms;
 }
 
 std::string AsrEngine::info() const {

@@ -131,6 +131,20 @@ Java_com_voicepersona_asr_AsrBridge_nativeDiarize(JNIEnv * env, jclass, jlong h,
     return out;
 }
 
+// True when the last run hit the family generation budget (transcript partial).
+JNIEXPORT jboolean JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeWasTruncated(JNIEnv *, jclass, jlong h) {
+    AsrEngine * engine = engine_from(h);
+    return (engine && engine->last_run_truncated()) ? JNI_TRUE : JNI_FALSE;
+}
+
+// Longest audio this session accepts in one call, in milliseconds.
+JNIEXPORT jlong JNICALL
+Java_com_voicepersona_asr_AsrBridge_nativeMaxAudioMs(JNIEnv *, jclass, jlong h) {
+    AsrEngine * engine = engine_from(h);
+    return engine ? (jlong) engine->max_audio_ms() : 0;
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_voicepersona_asr_AsrBridge_nativeInfo(JNIEnv * env, jclass, jlong h) {
     AsrEngine * engine = engine_from(h);

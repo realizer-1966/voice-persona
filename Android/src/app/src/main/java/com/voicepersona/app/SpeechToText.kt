@@ -22,8 +22,12 @@ class SpeechToText {
 
     companion object {
         const val SAMPLE_RATE = 16000
-        /** Leave headroom under the model's stated ceiling. */
-        private const val CHUNK_MARGIN = 0.9
+        /**
+         * Chunk below the single-call limit. The limit is the point where the
+         * model starts cutting its own transcript, so a small margin is enough;
+         * splitting also keeps each chunk's transcript complete.
+         */
+        private const val CHUNK_MARGIN = 0.85
     }
 
     suspend fun load(model: File, nThreads: Int, maxAudioSeconds: Int): String = lock.withLock {
@@ -37,6 +41,16 @@ class SpeechToText {
     }
 
     suspend fun isLoaded(): Boolean = lock.withLock { handle != 0L && AsrBridge.nativeIsLoaded(handle) }
+
+    /** True when the last native run ran out of generation budget. */
+    suspend fun wasTruncated(): Boolean = lock.withLock {
+        handle != 0L && AsrBridge.nativeWasTruncated(handle)
+    }
+
+    /** Longest audio this session can take in one call, in seconds. */
+    suspend fun maxAudioSeconds(): Int = lock.withLock {
+        if (handle == 0L) 0 else (AsrBridge.nativeMaxAudioMs(handle) / 1000).toInt()
+    }
 
     suspend fun loadDiarizer(model: File, nThreads: Int): Boolean = lock.withLock {
         withContext(Dispatchers.Default) {
@@ -124,14 +138,14 @@ class SpeechToText {
             if (handle == 0L) throw IllegalStateException("음성 모델이 로드되지 않았습니다")
             val chunkSize = chunkSeconds * SAMPLE_RATE
             if (pcm.size <= chunkSize) {
-                return@withContext runChunk(pcm)
+                return@withContext runChunkComplete(pcm)
             }
             val parts = ArrayList<String>()
             var start = 0
             while (start < pcm.size) {
                 val end = minOf(start + chunkSize, pcm.size)
                 if (end - start < SAMPLE_RATE / 2) break   // ignore sub-0.5 s tail
-                val piece = runChunk(pcm.copyOfRange(start, end))
+                val piece = runChunkComplete(pcm.copyOfRange(start, end))
                 if (piece.isNotBlank()) parts.add(piece.trim())
                 start = end
             }
@@ -143,6 +157,26 @@ class SpeechToText {
         val text = AsrBridge.nativeTranscribe(handle, pcm, pcm.size)
         if (text.startsWith("ERR:")) throw IllegalStateException(text.removePrefix("ERR: "))
         return text
+    }
+
+    /**
+     * Transcribes one chunk, and if the model reports that it ran out of
+     * generation budget the chunk is halved and retried. A truncated run
+     * returns an empty string (the library discards partial output), so the
+     * retry below is what actually recovers the text — the reported limit is
+     * advisory per family, so this self-corrects instead of trusting the table.
+     */
+    private fun runChunkComplete(pcm: FloatArray, depth: Int = 0): String {
+        val text = runChunk(pcm)
+        val truncated = AsrBridge.nativeWasTruncated(handle)
+        if (!truncated) return text
+        // Guard against runaway recursion, and stop splitting when a chunk is
+        // already too small to carry meaning.
+        if (depth >= 4 || pcm.size < SAMPLE_RATE * 20) return text
+        val half = pcm.size / 2
+        val first = runChunkComplete(pcm.copyOfRange(0, half), depth + 1)
+        val second = runChunkComplete(pcm.copyOfRange(half, pcm.size), depth + 1)
+        return (first.trim() + " " + second.trim()).trim()
     }
 
     /** Frees the native handle. Call from the owner's teardown. */

@@ -16,7 +16,12 @@ data class ModelSpec(
     val fileName: String,
     val approxBytes: Long,
     val languages: List<String> = emptyList(),
-    /** Single-pass audio ceiling, from the model's own input contract. */
+    /**
+     * Audio this model can transcribe in ONE call before the transcript gets cut
+     * off. Not the same as the input ceiling: Qwen3-ASR accepts ~87 min of audio
+     * but stops generating at 256 tokens (about 2-3 minutes of speech), so the
+     * usable single-call length is the smaller number.
+     */
     val maxAudioSeconds: Int = 48,
     val note: String = "",
 ) {
@@ -73,9 +78,11 @@ object ModelCatalog {
         note = "77MB 초경량, 일본어 전용, 최대 48초",
     )
 
-    // Qwen3-ASR is an audio-LLM: it auto-detects across 30 languages and takes a
-    // whole recording in one pass (65k-token decoder context), so long persona
-    // recordings do not have to be chunked.
+    // Qwen3-ASR is an audio-LLM: it auto-detects across 30 languages and holds
+    // 65k decoder tokens of audio, but generation stops at 256 tokens. Measured
+    // on device-host (sweep 60/80/100 s): 60 s completes, 80 s already hits the
+    // budget with an EMPTY result (OUTPUT_TRUNCATED returns no partial text),
+    // so chunks stay below the measured edge.
     val asrQwen3 = ModelSpec(
         id = "asr-qwen3-0.6b",
         label = "Qwen3-ASR 0.6B (30개 언어)",
@@ -83,8 +90,10 @@ object ModelCatalog {
         fileName = "Qwen3-ASR-0.6B-Q4_K_M.gguf",
         approxBytes = 589_557_760L,
         languages = listOf("ko", "ja", "en"),
-        maxAudioSeconds = 87 * 60,
-        note = "한국어·일본어 자동 감지, 긴 녹음 한 번에 처리",
+        // 256-token generation budget truncates around 60-80 s of Korean;
+        // 60 s keeps every chunk complete (80 s was measured truncated).
+        maxAudioSeconds = 60,
+        note = "30개 언어 자동 감지, 약 1분 단위로 나눠 처리",
     )
 
     // Speaker diarization runs beside the ASR model. It emits who-spoke-when, not

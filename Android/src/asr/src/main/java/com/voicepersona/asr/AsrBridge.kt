@@ -11,6 +11,12 @@ object AsrBridge {
     external fun nativeCreate(): Long
     external fun nativeDestroy(handle: Long)
     external fun nativeLoad(handle: Long, modelPath: String, nThreads: Int): String
+
+    /** True when the last run ran out of generation budget (partial transcript). */
+    external fun nativeWasTruncated(handle: Long): Boolean
+
+    /** Longest audio this session accepts in one call, in milliseconds. */
+    external fun nativeMaxAudioMs(handle: Long): Long
     external fun nativeIsLoaded(handle: Long): Boolean
     external fun nativeUnload(handle: Long)
 

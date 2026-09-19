@@ -27,6 +27,14 @@ public:
     // 16 kHz mono float32 in [-1, 1]. Blocking.
     std::string transcribe(const float * pcm, int n_samples, std::string & err);
 
+    // True when the last run hit the family's generation budget, meaning the
+    // transcript is incomplete. Qwen3-ASR caps a single call at 256 tokens,
+    // which is roughly 2-3 minutes of speech, so long audio must be chunked.
+    bool last_run_truncated() const;
+
+    // Longest audio this session accepts in one call, in milliseconds.
+    long long max_audio_ms() const;
+
     std::string info() const;
 
     // ---- speaker diarization (separate model, no transcript) ----
